@@ -10,7 +10,7 @@ interface StatusBadgeProps {
 }
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md', className }) => {
-  const config = {
+  const config: Record<AnalysisStatus, { label: string; icon: React.ComponentType<{ className?: string }>; styles: string }> = {
     verified: {
       label: 'Verified',
       icon: CheckCircle2,
@@ -36,13 +36,25 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md', c
       icon: Clock,
       styles: 'bg-[#E18230]/20 text-[#E18230] border-[#E18230]/30 animate-pulse',
     },
-  }[status] || {
+    document_supported: {
+      label: 'Document Supported',
+      icon: CheckCircle2,
+      styles: 'bg-blue-950/60 text-blue-400 border-blue-500/30',
+    },
+    model_prediction: {
+      label: 'Model Prediction',
+      icon: AlertTriangle,
+      styles: 'bg-purple-950/60 text-purple-400 border-purple-500/30',
+    },
+  };
+
+  const current = config[status] || {
     label: status,
     icon: AlertTriangle,
     styles: 'bg-[#3C3B39] text-[#F4F5EC] border-[#3C3B39]',
   };
 
-  const Icon = config.icon;
+  const Icon = current.icon;
 
   const sizeStyles = {
     sm: 'px-2 py-0.5 text-xs gap-1',
@@ -54,13 +66,13 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md', c
     <span
       className={cn(
         'inline-flex items-center rounded-md border font-medium tracking-wide transition-colors',
-        config.styles,
+        current.styles,
         sizeStyles,
         className
       )}
     >
       <Icon className={cn(size === 'sm' ? 'w-3 h-3' : size === 'lg' ? 'w-4 h-4' : 'w-3.5 h-3.5')} />
-      {config.label}
+      {current.label}
     </span>
   );
 };

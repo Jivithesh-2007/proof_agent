@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.config import settings
@@ -10,12 +11,20 @@ from backend.api.routes import (
     analysis_router,
 )
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(f"Starting {settings.APP_NAME} Backend (Env: {settings.APP_ENV})")
+    logger.info("Deterministic Analytical Engine & Verification System initialized successfully.")
+    yield
+    logger.info(f"Shutting down {settings.APP_NAME} Backend")
+
 app = FastAPI(
     title=settings.APP_NAME,
-    description="ProofAI — Model-Independent Foundation for Proof-Carrying Data Analysis",
-    version="0.1.0",
+    description="ProofAI — Deterministic Foundation for Proof-Carrying Data Analysis",
+    version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # Configure CORS
@@ -44,13 +53,6 @@ app.include_router(documents_router, prefix="/api")
 
 app.include_router(analysis_router)
 app.include_router(analysis_router, prefix="/api")
-
-
-@app.on_event("startup")
-def startup_event():
-    logger.info(f"Starting {settings.APP_NAME} Backend (Env: {settings.APP_ENV})")
-    logger.info(f"Active LLM Provider: {settings.LLM_PROVIDER}")
-    logger.info(f"Active CodeGen Provider: {settings.CODE_GEN_PROVIDER}")
 
 if __name__ == "__main__":
     import uvicorn

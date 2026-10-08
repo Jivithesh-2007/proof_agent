@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Analysis } from '../types';
+import { Analysis, Dataset } from '../types';
 import { getAnalyses } from '../services/analysis';
+import { getDatasets } from '../services/datasets';
 import { StatCard } from '../components/dashboard/StatCard';
 import { RecentAnalyses } from '../components/dashboard/RecentAnalyses';
 import { QuickStart } from '../components/dashboard/QuickStart';
@@ -11,10 +12,14 @@ import { CheckCircle2, ShieldCheck, Database, Activity, Plus, UploadCloud } from
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
 
   useEffect(() => {
     getAnalyses().then(setAnalyses);
+    getDatasets().then(setDatasets);
   }, []);
+
+  const totalRows = datasets.reduce((sum, d) => sum + d.rows, 0);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
@@ -22,10 +27,10 @@ export const DashboardPage: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b theme-border pb-6">
         <div>
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-            Good morning
+            ProofAI Control Plane
           </h1>
           <p className="text-sm theme-text-muted mt-1">
-            Analyze your data with answers you can verify.
+            Deterministic, proof-carrying data analysis with zero external LLM dependencies.
           </p>
         </div>
 
@@ -39,37 +44,36 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* KPI Stat Cards */}
+      {/* Dynamic KPI Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          label="Analyses completed"
-          value="128"
-          subtext="Executed in Python sandbox"
-          icon={Activity}
-          trend="+14% this week"
-          accentColor="red"
-        />
-        <StatCard
-          label="Verified answers"
-          value="116"
-          subtext="100% mathematical audit"
-          icon={CheckCircle2}
-          trend="90.6% success"
-          accentColor="red"
-        />
-        <StatCard
-          label="Datasets"
-          value="8"
-          subtext="45.2 MB indexed data"
+          label="Registered Datasets"
+          value={String(datasets.length)}
+          subtext="Cryptographically fingerprinted"
           icon={Database}
+          accentColor="red"
+        />
+        <StatCard
+          label="Total Records"
+          value={totalRows.toLocaleString()}
+          subtext="Available for query execution"
+          icon={Activity}
           accentColor="slate"
         />
         <StatCard
-          label="Verification rate"
-          value="90.6%"
-          subtext="Strictly audited rules"
+          label="Rule Analyst Engine"
+          value="Ready"
+          subtext="IF-THEN Analytical Reasoning"
           icon={ShieldCheck}
-          trend="High confidence"
+          trend="Deterministic"
+          accentColor="red"
+        />
+        <StatCard
+          label="Verification Policy"
+          value="Strict"
+          subtext="Independent Reference Engine"
+          icon={CheckCircle2}
+          trend="100% Invariant Check"
           accentColor="red"
         />
       </div>
@@ -78,7 +82,7 @@ export const DashboardPage: React.FC = () => {
       <QuickStart />
 
       {/* Recent Analysis Table */}
-      <RecentAnalyses analyses={analyses.slice(0, 5)} />
+      {analyses.length > 0 && <RecentAnalyses analyses={analyses.slice(0, 5)} />}
     </div>
   );
 };

@@ -8,7 +8,8 @@ def test_health_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert "model_providers" in data
+    assert "analytics_engine" in data
+    assert "verification" in data
 
 def test_datasets_list_endpoint():
     response = client.get("/api/datasets")

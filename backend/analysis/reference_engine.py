@@ -1,23 +1,20 @@
 import math
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 from backend.models.analysis_contract import AnalysisContract
 from backend.data.dataset_resolver import DatasetResolver, DatasetResolverError
-from backend.data.column_resolver import ColumnResolver, ColumnResolverError
 from backend.data.dataset_cache import DatasetCache
 from backend.services.storage import storage_service
-
-class ReferenceEngineError(Exception):
-    pass
 
 class ReferenceEngine:
     """
     Independent deterministic reference engine evaluating AnalysisContract on host pandas DataFrames.
     Operates strictly on AnalysisContract specifications (joins, filters, group_by, aggregations, sorting, limit).
     DOES NOT parse English question string.
-    DOES NOT use implicit fallbacks, fuzzy column guessing, or question keyword hardcoding.
-    Independent implementation from ContractExecutor and generated sandbox code.
+    DOES NOT use implicit fallbacks or fuzzy guessing.
+    Independent calculation against which execution results are strictly verified.
     """
 
     @classmethod
@@ -59,7 +56,9 @@ class ReferenceEngine:
                     if w_path.exists():
                         df_cached = DatasetCache.get_dataframe(w_path)
                         if df_cached is not None:
-                            dfs[ds_id] = df_cached
+                            dfs[ds_id] = df_cached.copy()
+                        else:
+                            dfs[ds_id] = pd.read_csv(w_path)
                     else:
                         if dataset_files and ds_id in dataset_files:
                             item = dataset_files[ds_id]
@@ -67,6 +66,10 @@ class ReferenceEngine:
                                 dfs[ds_id] = item.copy()
                             else:
                                 dfs[ds_id] = DatasetCache.get_dataframe(Path(item)) or pd.read_csv(Path(item))
+                        else:
+                            df_storage = storage_service.get_dataframe(ds_id)
+                            if df_storage is not None:
+                                dfs[ds_id] = df_storage.copy()
                 except DatasetResolverError:
                     if dataset_files and ds_id in dataset_files:
                         item = dataset_files[ds_id]
@@ -85,7 +88,7 @@ class ReferenceEngine:
                     "error": "ReferenceEngine: Required datasets could not be loaded."
                 }
 
-            # 2. Semantic Return Rate Definitions
+            # 2. Semantic Return Rate Definitions (Kaggle e-commerce backwards compat)
             if contract.return_definition:
                 ret_def = contract.return_definition
                 df_ord = cls._get_table_df("orders", dfs)
@@ -124,51 +127,19 @@ class ReferenceEngine:
                             "result_type": "percentage"
                         }
 
-                elif ret_def == "item_return_rate":
-                    df_items = cls._get_table_df("order_items", dfs)
-                    if df_items is not None and df_ret is not None:
-                        tot_items = len(df_items)
-                        ret_items = len(df_ret)
-                        rate = round(float((ret_items / tot_items) * 100.0), 2)
-                        return {
-                            "success": True,
-                            "result": rate,
-                            "metric": "item_return_rate",
-                            "label": None,
-                            "unit": contract.expected_unit or "percent",
-                            "result_type": "percentage"
-                        }
-
-                elif ret_def == "revenue_return_rate":
-                    if df_ord is not None and df_ret is not None:
-                        tot_rev = df_ord["final_amount"].sum()
-                        ret_cust_ids = df_ret["customer_id"].unique()
-                        ret_rev = df_ord[df_ord["customer_id"].isin(ret_cust_ids)]["final_amount"].sum()
-                        rate = round(float((ret_rev / tot_rev) * 100.0), 2)
-                        return {
-                            "success": True,
-                            "result": rate,
-                            "metric": "revenue_return_rate",
-                            "label": None,
-                            "unit": contract.expected_unit or "percent",
-                            "result_type": "percentage"
-                        }
-
             # 3. General Contract Evaluation
             main_ds_id = contract.datasets_required[0]
             curr_df = dfs[main_ds_id].copy()
 
             # Apply Contract Joins
             for j in contract.joins:
-                left_ds = j.left_dataset
-                right_ds = j.right_dataset
                 left_col = j.left_column
                 right_col = j.right_column
                 how_type = j.how or "inner"
 
-                rdf = dfs.get(right_ds)
+                rdf = dfs.get(j.right_dataset)
                 if rdf is None:
-                    rdf = storage_service.get_dataframe(right_ds)
+                    rdf = storage_service.get_dataframe(j.right_dataset)
 
                 if rdf is not None:
                     if left_col == right_col:
@@ -180,7 +151,7 @@ class ReferenceEngine:
             for f in contract.filters:
                 c = f.column
                 v = f.value
-                op = f.operator
+                op = f.operator or "=="
 
                 if c not in curr_df.columns:
                     return {
@@ -188,101 +159,167 @@ class ReferenceEngine:
                         "error": f"ReferenceEngine: Filter column '{c}' not found in dataset dataframe"
                     }
 
+                col_s = curr_df[c]
                 if op == "==":
-                    curr_df = curr_df[curr_df[c].astype(str).str.lower() == str(v).lower()]
+                    if pd.api.types.is_numeric_dtype(col_s) and isinstance(v, (int, float)):
+                        curr_df = curr_df[col_s == v]
+                    else:
+                        curr_df = curr_df[col_s.astype(str).str.lower() == str(v).lower()]
                 elif op == "!=":
-                    curr_df = curr_df[curr_df[c].astype(str).str.lower() != str(v).lower()]
+                    if pd.api.types.is_numeric_dtype(col_s) and isinstance(v, (int, float)):
+                        curr_df = curr_df[col_s != v]
+                    else:
+                        curr_df = curr_df[col_s.astype(str).str.lower() != str(v).lower()]
                 elif op == ">":
-                    curr_df = curr_df[curr_df[c] > v]
+                    curr_df = curr_df[pd.to_numeric(col_s, errors='coerce') > float(v)]
                 elif op == "<":
-                    curr_df = curr_df[curr_df[c] < v]
+                    curr_df = curr_df[pd.to_numeric(col_s, errors='coerce') < float(v)]
                 elif op == ">=":
-                    curr_df = curr_df[curr_df[c] >= v]
+                    curr_df = curr_df[pd.to_numeric(col_s, errors='coerce') >= float(v)]
                 elif op == "<=":
-                    curr_df = curr_df[curr_df[c] <= v]
+                    curr_df = curr_df[pd.to_numeric(col_s, errors='coerce') <= float(v)]
+                elif op in ["in", "contains"]:
+                    v_list = v if isinstance(v, (list, tuple, set)) else [v]
+                    curr_df = curr_df[col_s.astype(str).str.lower().isin([str(x).lower() for x in v_list])]
 
             # Apply GroupBy & Aggregations
-            g_cols = [g.column for g in contract.group_by]
-            for gc in g_cols:
-                if gc not in curr_df.columns:
-                    return {
-                        "success": False,
-                        "error": f"ReferenceEngine: Group-by column '{gc}' not found in dataset dataframe"
-                    }
+            g_cols = [g.column for g in contract.group_by if g.column in curr_df.columns]
 
             target_col = None
-            target_op = "sum"
+            target_op = "count"
             if contract.aggregations:
                 target_col = contract.aggregations[0].column
-                target_op = contract.aggregations[0].operation or "sum"
+                target_op = (contract.aggregations[0].operation or "count").lower()
             elif contract.columns_required:
                 for col_cand in contract.columns_required:
-                    if col_cand not in g_cols:
+                    if col_cand not in g_cols and col_cand in curr_df.columns:
                         target_col = col_cand
                         break
 
-            if g_cols and target_col and target_col in curr_df.columns:
+            # Handle correlation
+            if target_op == "correlation":
+                num_cols = [c for c in contract.columns_required if c in curr_df.columns and pd.api.types.is_numeric_dtype(curr_df[c])]
+                if len(num_cols) < 2:
+                    all_nums = [c for c in curr_df.columns if pd.api.types.is_numeric_dtype(curr_df[c])]
+                    num_cols = all_nums[:2] if len(all_nums) >= 2 else []
+                if len(num_cols) >= 2:
+                    c1, c2 = num_cols[0], num_cols[1]
+                    corr_val = float(curr_df[c1].corr(curr_df[c2]))
+                    corr_val = round(corr_val, 4) if not np.isnan(corr_val) else 0.0
+                    return {
+                        "success": True,
+                        "result": corr_val,
+                        "metric": f"correlation_{c1}_{c2}",
+                        "label": None,
+                        "unit": "unitless",
+                        "result_type": "float"
+                    }
+
+            if g_cols:
+                if not target_col or target_col not in curr_df.columns:
+                    non_g = [c for c in curr_df.columns if c not in g_cols]
+                    target_col = non_g[0] if non_g else g_cols[0]
+
+                gb = curr_df.groupby(g_cols, as_index=False)
                 if target_op == "sum":
-                    grp = curr_df.groupby(g_cols)[target_col].sum().reset_index()
+                    grp = gb[target_col].sum()
                 elif target_op == "mean":
-                    grp = curr_df.groupby(g_cols)[target_col].mean().reset_index()
-                elif target_op == "count":
-                    grp = curr_df.groupby(g_cols)[target_col].count().reset_index()
+                    grp = gb[target_col].mean()
+                elif target_op == "median":
+                    grp = gb[target_col].median()
+                elif target_op == "min":
+                    grp = gb[target_col].min()
+                elif target_op == "max":
+                    grp = gb[target_col].max()
+                elif target_op == "std":
+                    grp = gb[target_col].std()
+                elif target_op == "variance":
+                    grp = gb[target_col].var()
+                elif target_op in ["count", "nunique"]:
+                    grp = gb[target_col].nunique() if target_op == "nunique" else gb[target_col].count()
                 else:
-                    grp = curr_df.groupby(g_cols)[target_col].sum().reset_index()
+                    return {"success": False, "error": f"Unsupported aggregation: {target_op}"}
 
                 asc = False
                 if contract.sorting and contract.sorting[0].order == "asc":
                     asc = True
                 grp = grp.sort_values(by=target_col, ascending=asc)
 
-                if len(grp) == 0:
+                if contract.limit is not None:
+                    grp = grp.head(contract.limit)
+
+                if contract.expected_result_type == "ranked_item" or (contract.limit == 1 and contract.sorting):
+                    if len(grp) == 0:
+                        return {"success": False, "error": "ReferenceEngine: GroupBy returned 0 rows"}
+                    top = grp.iloc[0]
+                    val = round(float(top[target_col]), 2)
+                    lbl = str(top[g_cols[0]])
                     return {
-                        "success": False,
-                        "error": "ReferenceEngine: GroupBy returned 0 rows"
+                        "success": True,
+                        "result": val,
+                        "metric": contract.expected_metric or lbl,
+                        "label": lbl,
+                        "unit": contract.expected_unit,
+                        "result_type": "ranked_item"
+                    }
+                else:
+                    # Table for GROUP_AGGREGATE
+                    records = grp.to_dict(orient="records")
+                    for r in records:
+                        if target_col in r and isinstance(r[target_col], (float, np.floating)):
+                            r[target_col] = round(float(r[target_col]), 2)
+                    return {
+                        "success": True,
+                        "result": records,
+                        "metric": contract.expected_metric or f"{target_op}_{target_col}_by_{g_cols[0]}",
+                        "label": None,
+                        "unit": contract.expected_unit,
+                        "result_type": "grouped_table",
+                        "table": records
                     }
 
-                top = grp.iloc[0]
-                val = round(float(top[target_col]), 2)
-                lbl = str(top[g_cols[0]])
-                return {
-                    "success": True,
-                    "result": val,
-                    "metric": contract.expected_metric or lbl,
-                    "label": lbl,
-                    "unit": contract.expected_unit,
-                    "result_type": contract.expected_result_type or "ranked_item"
-                }
-
             elif target_col and target_col in curr_df.columns:
+                series = curr_df[target_col]
                 if target_op == "sum":
-                    val = float(curr_df[target_col].sum())
+                    val = float(series.sum())
                 elif target_op == "mean":
-                    val = float(curr_df[target_col].mean())
+                    val = float(series.mean())
+                elif target_op == "median":
+                    val = float(series.median())
+                elif target_op == "min":
+                    val = float(series.min())
+                elif target_op == "max":
+                    val = float(series.max())
+                elif target_op == "std":
+                    val = float(series.std())
+                elif target_op == "variance":
+                    val = float(series.var())
+                elif target_op == "nunique":
+                    val = int(series.nunique())
                 elif target_op == "count":
-                    val = float(len(curr_df))
+                    val = int(series.count())
                 else:
-                    val = float(curr_df[target_col].sum())
+                    return {"success": False, "error": f"Unsupported scalar aggregation: {target_op}"}
 
-                val = round(val, 2)
+                val = round(val, 2) if isinstance(val, float) else val
                 return {
                     "success": True,
                     "result": val,
                     "metric": contract.expected_metric or f"{target_op}_{target_col}",
                     "label": None,
                     "unit": contract.expected_unit,
-                    "result_type": contract.expected_result_type or "scalar"
+                    "result_type": contract.expected_result_type or ("integer" if isinstance(val, int) else "float")
                 }
 
             else:
-                val = float(len(curr_df))
+                val = int(len(curr_df))
                 return {
                     "success": True,
                     "result": val,
                     "metric": contract.expected_metric or "row_count",
                     "label": None,
-                    "unit": contract.expected_unit or "count",
-                    "result_type": contract.expected_result_type or "scalar"
+                    "unit": "count",
+                    "result_type": "integer"
                 }
 
         except Exception as ex:

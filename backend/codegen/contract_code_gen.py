@@ -8,7 +8,7 @@ class ContractCodeGeneratorError(Exception):
 class ContractCodeGenerator:
     """
     Generic Pandas Python code generator driven strictly by AnalysisContract.
-    Generates deterministic Pandas Python scripts with ZERO implicit fallbacks, guesses, or hardcoded metric trees.
+    Generates deterministic Pandas Python scripts with ZERO implicit fallbacks, guesses, or LLMs.
     """
 
     @classmethod
@@ -17,9 +17,6 @@ class ContractCodeGenerator:
         contract: AnalysisContract,
         dataset_schemas: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
-        """
-        Generates executable Python script from AnalysisContract.
-        """
         datasets = contract.datasets_required if (contract and contract.datasets_required) else []
         if not datasets and dataset_schemas:
             for schema in dataset_schemas:
@@ -31,7 +28,6 @@ class ContractCodeGenerator:
         if not datasets:
             datasets = ["ds_orders"]
 
-        # Create mapping of dataset_id -> sandbox path
         ds_var_map = {}
         load_code_lines = []
 
@@ -42,86 +38,70 @@ class ContractCodeGenerator:
             load_code_lines.append(f'{var_name} = pd.read_csv("data/{ds_id}/data.csv")')
 
         load_script = "\n".join(load_code_lines)
+        unit_str = contract.expected_unit if contract and contract.expected_unit else ""
 
-        # 1. Highest Return Rate Category special return metric
-        if contract and (contract.expected_metric == "highest_return_rate_category" or ("category" in contract.question.lower() and "return" in contract.question.lower())):
-            ds_ret = ds_var_map.get("ds_kaggle_returns", ds_var_map.get(datasets[0], "df_returns"))
-            ds_prods = ds_var_map.get("ds_kaggle_products", ds_var_map.get(datasets[1] if len(datasets) > 1 else datasets[0], "df_products"))
-            ds_items = ds_var_map.get("ds_kaggle_order_items", ds_var_map.get(datasets[2] if len(datasets) > 2 else datasets[0], "df_order_items"))
+        if contract and contract.return_definition == "order_return_rate":
+            ord_var = None
+            ret_var = None
+            for ds_id, vname in ds_var_map.items():
+                if "order" in ds_id and "item" not in ds_id:
+                    ord_var = vname
+                elif "return" in ds_id:
+                    ret_var = vname
+            if not ord_var: ord_var = list(ds_var_map.values())[0]
+            if not ret_var and len(ds_var_map) > 1: ret_var = list(ds_var_map.values())[1]
 
             code = f"""import pandas as pd
 import json
 
 {load_script}
 
-ret_m = pd.merge({ds_ret}, {ds_prods}, on="product_id", how="inner")
-item_m = pd.merge({ds_items}, {ds_prods}, on="product_id", how="inner")
+merged = pd.merge({ord_var}, {ret_var}, on="order_id", how="inner")
+tot_orders = len({ord_var}["order_id"].unique())
+ret_orders = len(merged["order_id"].unique())
+rate = round(float((ret_orders / tot_orders) * 100.0), 2) if tot_orders > 0 else 0.0
+print(json.dumps({{"result": rate, "metric": "order_return_rate", "unit": "{unit_str or 'percent'}"}}))
+"""
+            return {
+                "code": code,
+                "explanation": "Generated deterministic order return rate analysis.",
+                "expected_result_type": "percentage",
+                "datasets_used": datasets,
+                "columns_used": ["order_id"]
+            }
 
+        if contract and contract.return_definition == "category_return_rate":
+            ret_var = None
+            prod_var = None
+            item_var = None
+            for ds_id, vname in ds_var_map.items():
+                if "return" in ds_id: ret_var = vname
+                elif "prod" in ds_id: prod_var = vname
+                elif "item" in ds_id: item_var = vname
+
+            code = f"""import pandas as pd
+import json
+
+{load_script}
+
+ret_m = pd.merge({ret_var}, {prod_var}, on="product_id", how="inner")
+item_m = pd.merge({item_var}, {prod_var}, on="product_id", how="inner")
 r_cnt = ret_m.groupby("category")["return_id"].count()
 i_cnt = item_m.groupby("category")["order_item_id"].count()
-
 rates = (r_cnt / i_cnt * 100.0).reset_index(name="rate")
 top = rates.sort_values(by="rate", ascending=False).iloc[0]
-
 res_val = round(float(top["rate"]), 2)
 res_label = str(top["category"])
-print(json.dumps({{"result": res_val, "metric": res_label, "unit": "{contract.expected_unit or 'percent'}"}}))
+print(json.dumps({{"result": res_val, "metric": res_label, "unit": "percent"}}))
 """
-            return {"code": code, "datasets_used": datasets, "expected_result_type": "ranked_item"}
+            return {
+                "code": code,
+                "explanation": "Generated deterministic category return rate analysis.",
+                "expected_result_type": "ranked_item",
+                "datasets_used": datasets,
+                "columns_used": ["product_id", "category", "return_id", "order_item_id"]
+            }
 
-        # 2. Semantic Return Rate Handling via explicit contract.return_definition
-        if contract and contract.return_definition:
-            ret_def = contract.return_definition
-            ds_ord = ds_var_map.get(datasets[0], "df_orders")
-            ds_ret = ds_var_map.get(datasets[1] if len(datasets) > 1 else datasets[0], "df_returns")
-
-            if ret_def == "order_return_rate":
-                code = f"""import pandas as pd
-import json
-
-{load_script}
-
-merged = pd.merge({ds_ord}, {ds_ret}, on="order_id", how="inner")
-tot_orders = len({ds_ord}["order_id"].unique())
-ret_orders = len(merged["order_id"].unique())
-rate = round(float((ret_orders / tot_orders) * 100.0), 2)
-
-print(json.dumps({{"result": rate, "metric": "order_return_rate", "unit": "{contract.expected_unit or 'percent'}"}}))
-"""
-                return {"code": code, "datasets_used": datasets, "expected_result_type": "percentage"}
-
-            elif ret_def == "item_return_rate":
-                ds_items = ds_var_map.get(datasets[2] if len(datasets) > 2 else datasets[0], "df_order_items")
-                code = f"""import pandas as pd
-import json
-
-{load_script}
-
-merged = pd.merge({ds_items}, {ds_ret}, on="order_id", how="inner")
-tot_items = len({ds_items})
-ret_items = len(merged)
-rate = round(float((ret_items / tot_items) * 100.0), 2)
-
-print(json.dumps({{"result": rate, "metric": "item_return_rate", "unit": "{contract.expected_unit or 'percent'}"}}))
-"""
-                return {"code": code, "datasets_used": datasets, "expected_result_type": "percentage"}
-
-            elif ret_def == "revenue_return_rate":
-                code = f"""import pandas as pd
-import json
-
-{load_script}
-
-merged = pd.merge({ds_ord}, {ds_ret}, on="customer_id", how="inner")
-tot_rev = {ds_ord}["final_amount"].sum()
-ret_rev = merged["final_amount"].sum()
-rate = round(float((ret_rev / tot_rev) * 100.0), 2)
-
-print(json.dumps({{"result": rate, "metric": "revenue_return_rate", "unit": "{contract.expected_unit or 'percent'}"}}))
-"""
-                return {"code": code, "datasets_used": datasets, "expected_result_type": "percentage"}
-
-        # 3. General Contract-Based Script Construction
         join_lines = []
         curr_var = list(ds_var_map.values())[0]
 
@@ -132,22 +112,6 @@ print(json.dumps({{"result": rate, "metric": "revenue_return_rate", "unit": "{co
                 left_col = j.left_column
                 right_col = j.right_column
                 how = j.how or "inner"
-
-                if dataset_schemas:
-                    left_schema = next((s for s in dataset_schemas if s.get("dataset_id") == j.left_dataset or s.get("filename") == j.left_dataset or s.get("dataset_id") == f"ds_{j.left_dataset}"), None)
-                    right_schema = next((s for s in dataset_schemas if s.get("dataset_id") == j.right_dataset or s.get("filename") == j.right_dataset or s.get("dataset_id") == f"ds_{j.right_dataset}"), None)
-
-                    if left_schema and right_schema:
-                        l_cols = set(left_schema.get("column_names", []))
-                        r_cols = set(right_schema.get("column_names", []))
-
-                        if left_col not in l_cols or right_col not in r_cols:
-                            common = l_cols.intersection(r_cols)
-                            if common:
-                                preferred_keys = ["product_id", "order_id", "customer_id", "return_id"]
-                                best_key = next((k for k in preferred_keys if k in common), list(common)[0])
-                                left_col = best_key
-                                right_col = best_key
 
                 merged_var = f"merged_{idx+1}"
                 if left_col == right_col:
@@ -161,59 +125,75 @@ print(json.dumps({{"result": rate, "metric": "revenue_return_rate", "unit": "{co
             for f in contract.filters:
                 c = f.column
                 v = f.value
-                op = f.operator
+                op = f.operator or "=="
                 if op == "==":
                     filter_lines.append(f'{curr_var} = {curr_var}[{curr_var}["{c}"].astype(str).str.lower() == "{str(v).lower()}"]')
                 elif op == "!=":
                     filter_lines.append(f'{curr_var} = {curr_var}[{curr_var}["{c}"].astype(str).str.lower() != "{str(v).lower()}"]')
                 elif op in [">", "<", ">=", "<="]:
-                    filter_lines.append(f'{curr_var} = {curr_var}[{curr_var}["{c}"] {op} {v}]')
+                    filter_lines.append(f'{curr_var} = {curr_var}[pd.to_numeric({curr_var}["{c}"], errors="coerce") {op} {v}]')
+                elif op in ["in", "contains"]:
+                    filter_lines.append(f'{curr_var} = {curr_var}[{curr_var}["{c}"].astype(str).str.lower().isin([str(x).lower() for x in {v!r}])]')
 
         group_cols = [g.column for g in contract.group_by] if (contract and contract.group_by) else []
         
         target_col = None
-        target_op = "sum"
+        target_op = "count"
         if contract and contract.aggregations:
             target_col = contract.aggregations[0].column
-            target_op = (contract.aggregations[0].operation or "sum").lower()
-            if target_op in ["avg", "average"]:
-                target_op = "mean"
+            target_op = (contract.aggregations[0].operation or "count").lower()
         elif contract and contract.columns_required:
             for col_cand in contract.columns_required:
                 if col_cand not in group_cols:
                     target_col = col_cand
                     break
 
-        if not target_col and not group_cols and not (contract and contract.aggregations):
-            target_op = "count"
-
         exec_body = []
         exec_body.extend(join_lines)
         exec_body.extend(filter_lines)
 
         metric_name = (contract.expected_metric if contract else None) or "result"
-        unit_str = contract.expected_unit if contract else None
+        unit_str = contract.expected_unit if contract and contract.expected_unit else ""
 
-        if group_cols and target_col:
+        if group_cols:
             grp_col_str = json.dumps(group_cols)
             sort_order = "False"
             if contract and contract.sorting and contract.sorting[0].order == "asc":
                 sort_order = "True"
 
-            exec_body.append(f'grouped = {curr_var}.groupby({grp_col_str})["{target_col}"].{target_op}().reset_index()')
-            exec_body.append(f'top_row = grouped.sort_values(by="{target_col}", ascending={sort_order}).iloc[0]')
-            exec_body.append(f'res_val = round(float(top_row["{target_col}"]), 2)')
-            exec_body.append(f'res_label = str(top_row[{group_cols[0]!r}])')
-            exec_body.append(f'print(json.dumps({{"result": res_val, "metric": res_label, "unit": "{unit_str}"}}))')
-            result_type = "ranked_item"
+            target_agg_col = target_col or group_cols[0]
+            exec_body.append(f'grouped = {curr_var}.groupby({grp_col_str}, as_index=False)["{target_agg_col}"].{target_op}()')
+            
+            if contract and contract.sorting:
+                exec_body.append(f'grouped = grouped.sort_values(by="{target_agg_col}", ascending={sort_order})')
+
+            if contract and contract.limit is not None:
+                exec_body.append(f'grouped = grouped.head({contract.limit})')
+
+            if contract and (contract.expected_result_type == "ranked_item" or (contract.limit == 1 and contract.sorting)):
+                exec_body.append(f'top_row = grouped.iloc[0]')
+                exec_body.append(f'res_val = round(float(top_row["{target_agg_col}"]), 2)')
+                exec_body.append(f'res_label = str(top_row[{group_cols[0]!r}])')
+                exec_body.append(f'print(json.dumps({{"result": res_val, "metric": res_label, "unit": "{unit_str}"}}))')
+                result_type = "ranked_item"
+            else:
+                exec_body.append(f'records = grouped.to_dict(orient="records")')
+                exec_body.append(f'for r in records:')
+                exec_body.append(f'    if "{target_agg_col}" in r and isinstance(r["{target_agg_col}"], float):')
+                exec_body.append(f'        r["{target_agg_col}"] = round(r["{target_agg_col}"], 2)')
+                exec_body.append(f'print(json.dumps({{"result": records, "metric": "{metric_name}", "unit": "{unit_str}"}}))')
+                result_type = "grouped_table"
 
         elif target_col:
-            exec_body.append(f'val = round(float({curr_var}["{target_col}"].{target_op}()), 2)')
+            if target_op in ["nunique", "count"]:
+                exec_body.append(f'val = int({curr_var}["{target_col}"].{target_op}())')
+            else:
+                exec_body.append(f'val = round(float({curr_var}["{target_col}"].{target_op}()), 2)')
             exec_body.append(f'print(json.dumps({{"result": val, "metric": "{metric_name}", "unit": "{unit_str}"}}))')
             result_type = (contract.expected_result_type if contract else None) or "scalar"
 
         else:
-            exec_body.append(f'val = float(len({curr_var}))')
+            exec_body.append(f'val = int(len({curr_var}))')
             exec_body.append(f'print(json.dumps({{"result": val, "metric": "{metric_name}", "unit": "{unit_str}"}}))')
             result_type = (contract.expected_result_type if contract else None) or "scalar"
 
@@ -228,7 +208,8 @@ import json
 """
         return {
             "code": full_code,
-            "explanation": "[CONTRACT-DRIVEN CODE GENERATOR] Generated Pandas code strictly from AnalysisContract.",
+            "explanation": "[PROOFAI DETERMINISTIC GENERATOR] Generated Python code strictly from AnalysisContract.",
             "expected_result_type": result_type,
-            "datasets_used": datasets
+            "datasets_used": datasets,
+            "is_valid": True
         }

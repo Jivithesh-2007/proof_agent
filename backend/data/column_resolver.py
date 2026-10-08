@@ -1,3 +1,4 @@
+import re
 import logging
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
@@ -16,7 +17,22 @@ class ColumnResolverError(Exception):
     pass
 
 class ColumnResolver:
-    """Authoritative exact column resolver. Prevents silent column guessing or fuzzy mapping."""
+    """
+    Authoritative dynamic column resolver.
+    Implements safe normalization (lowercase, trim, normalize spaces/underscores/hyphens/punctuation).
+    Matches columns unambiguously.
+    Refuses if ambiguous or absent.
+    Zero fuzzy guessing.
+    """
+
+    @staticmethod
+    def normalize_col(name: str) -> str:
+        if not name:
+            return ""
+        n = name.lower().strip()
+        n = re.sub(r"\([^)]*\)", "", n)
+        n = re.sub(r"[^a-z0-9]", " ", n)
+        return " ".join(n.split())
 
     @staticmethod
     def resolve_column(dataset_id: str, column_name: str, explicit_schema_mapping: Optional[Dict[str, str]] = None) -> ColumnResolution:
@@ -26,7 +42,7 @@ class ColumnResolver:
         resolved_ds = DatasetResolver.resolve_dataset(dataset_id)
         cols = resolved_ds.columns
 
-        # Check explicit schema mapping first if provided
+        # 1. Check explicit schema mapping first if provided
         if explicit_schema_mapping and column_name in explicit_schema_mapping:
             mapped_col = explicit_schema_mapping[column_name]
             if mapped_col in cols:
@@ -37,7 +53,7 @@ class ColumnResolver:
                     is_exact_match=False
                 )
 
-        # Exact match check
+        # 2. Exact match check
         if column_name in cols:
             return ColumnResolution(
                 dataset_id=resolved_ds.dataset_id,
@@ -45,6 +61,35 @@ class ColumnResolver:
                 resolved_column=column_name,
                 is_exact_match=True
             )
+
+        # 3. Case-insensitive exact match
+        ci_matches = [c for c in cols if c.lower() == column_name.lower()]
+        if len(ci_matches) == 1:
+            return ColumnResolution(
+                dataset_id=resolved_ds.dataset_id,
+                requested_column=column_name,
+                resolved_column=ci_matches[0],
+                is_exact_match=False
+            )
+        elif len(ci_matches) > 1:
+            raise ColumnResolverError(f"Ambiguous column '{column_name}' matches multiple columns: {ci_matches}")
+
+        # 4. Safe normalization match (e.g. 'Revenue ($)' matches 'revenue')
+        norm_req = ColumnResolver.normalize_col(column_name)
+        norm_matches = []
+        for c in cols:
+            if ColumnResolver.normalize_col(c) == norm_req:
+                norm_matches.append(c)
+
+        if len(norm_matches) == 1:
+            return ColumnResolution(
+                dataset_id=resolved_ds.dataset_id,
+                requested_column=column_name,
+                resolved_column=norm_matches[0],
+                is_exact_match=False
+            )
+        elif len(norm_matches) > 1:
+            raise ColumnResolverError(f"Ambiguous column '{column_name}' matches multiple normalized columns: {norm_matches}")
 
         raise ColumnResolverError(
             f"Column '{column_name}' does not exist in dataset '{dataset_id}'. "

@@ -15,7 +15,15 @@ def is_ollama_available() -> bool:
     try:
         client = OllamaClient()
         hc = client.health_check()
-        return hc.get("available", False)
+        if not hc.get("available", False):
+            return False
+        models = [m.lower() for m in hc.get("models", [])]
+        p_model = ollama_config.planner_model.lower()
+        c_model = ollama_config.code_model.lower()
+        # Require both models to be present (matching either full tag or base name)
+        p_present = any(p_model in m or m.startswith(p_model.split(":")[0]) for m in models)
+        c_present = any(c_model in m or m.startswith(c_model.split(":")[0]) for m in models)
+        return p_present and c_present
     except Exception:
         return False
 

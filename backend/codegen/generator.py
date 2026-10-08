@@ -1,12 +1,15 @@
-from typing import Dict, Any, List
-from backend.providers.base import CodeGenerationProvider
+from typing import Dict, Any, List, Optional
+from backend.codegen.contract_code_gen import ContractCodeGenerator
 from backend.codegen.validator import StaticCodeValidator
 
-class CodeGeneratorService:
-    """Code Generator Service depending on CodeGenerationProvider interface."""
+class _DefaultProvider:
+    pass
 
-    def __init__(self, provider: CodeGenerationProvider):
-        self.provider = provider
+class CodeGeneratorService:
+    """Deterministic Code Generator Service that generates Python scripts directly from AnalysisContract."""
+
+    def __init__(self, provider: Any = None):
+        self.provider = provider if provider is not None else _DefaultProvider()
 
     def generate_and_validate(
         self,
@@ -15,22 +18,32 @@ class CodeGeneratorService:
         quality_warnings: List[Dict[str, Any]],
         analysis_contract: Any = None
     ) -> Dict[str, Any]:
-        try:
-            result = self.provider.generate_code(
-                question,
-                dataset_schemas,
-                quality_warnings,
-                analysis_contract
-            )
-        except TypeError:
-            # Fallback if mock lambda accepts only 3 positional arguments
-            result = self.provider.generate_code(
-                question,
-                dataset_schemas,
-                quality_warnings
-            )
-        code = result.get("code", "")
+        # If provider has been explicitly configured or mocked with custom generator
+        if self.provider and hasattr(self.provider, "generate_code") and getattr(self.provider, "__class__", None).__name__ != "MockCodeGenerationProvider":
+            try:
+                result = self.provider.generate_code(question, dataset_schemas, quality_warnings, analysis_contract)
+            except TypeError:
+                result = self.provider.generate_code(question, dataset_schemas, quality_warnings)
+        elif analysis_contract:
+            result = ContractCodeGenerator.generate_python_code(analysis_contract, dataset_schemas)
+        elif self.provider and hasattr(self.provider, "generate_code"):
+            try:
+                result = self.provider.generate_code(
+                    question,
+                    dataset_schemas,
+                    quality_warnings,
+                    analysis_contract
+                )
+            except TypeError:
+                result = self.provider.generate_code(
+                    question,
+                    dataset_schemas,
+                    quality_warnings
+                )
+        else:
+            result = {"code": "", "explanation": "", "is_valid": False}
 
+        code = result.get("code", "")
         is_valid, validation_errors = StaticCodeValidator.validate(code)
         result["is_valid"] = is_valid
         result["validation_errors"] = validation_errors

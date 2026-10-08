@@ -1,6 +1,6 @@
-export type AnalysisStatus = 'verified' | 'warning' | 'refused' | 'failed' | 'processing';
+export type AnalysisStatus = 'verified' | 'warning' | 'refused' | 'failed' | 'processing' | 'document_supported' | 'model_prediction';
 export type ConfidenceLevel = 'high' | 'medium' | 'low';
-export type FileType = 'csv' | 'xlsx' | 'pdf';
+export type FileType = 'csv' | 'xlsx' | 'pdf' | 'json';
 
 export interface Dataset {
   id: string;
@@ -15,11 +15,15 @@ export interface Dataset {
   duplicateRows: number;
   warningCount: number;
   columnNames: string[];
+  sha256?: string;
+  isDuplicate?: boolean;
+  sampleRows?: Record<string, any>[];
+  columnProfiles?: ColumnProfile[];
 }
 
 export interface ColumnProfile {
   name: string;
-  inferredType: 'string' | 'number' | 'date' | 'boolean';
+  inferredType: string;
   missingCount: number;
   missingPercentage: number;
   uniqueCount: number;
@@ -53,7 +57,7 @@ export interface EvidenceItem {
   page?: number;
   section?: string;
   excerpt: string;
-  relevance: number; // 0 to 1
+  relevance: number;
   fileType?: FileType;
   indexedChunks?: number;
 }
@@ -74,8 +78,8 @@ export interface CodeExecutionDetails {
   code: string;
   executionStatus: 'Successful' | 'Failed' | 'Timeout';
   executionTime: string;
-  environment: 'Sandboxed Python 3.11' | 'Isolated Container';
-  outputType: 'Numeric' | 'Table' | 'Chart' | 'Refusal';
+  environment: string;
+  outputType: string;
   reproducible: boolean;
   stdout?: string;
 }
@@ -94,6 +98,9 @@ export interface Verification {
   dataQualityPassed: boolean;
   sourceConflicts: boolean;
   confidenceReason: string[];
+  vChecks?: Record<string, string>;
+  reproducibilityDiff?: number;
+  referenceMatch?: boolean;
 }
 
 export interface Analysis {
@@ -114,19 +121,24 @@ export interface Analysis {
   dataQuality?: DataQualityReport;
   trace?: TraceStep[];
   verification?: Verification;
+  ruleReasoning?: string[];
+  analysisContract?: Record<string, any>;
+  canonicalResult?: Record<string, any>;
+  referenceResult?: Record<string, any>;
+  proofTrace?: Record<string, any>;
+  tableData?: Record<string, any>[];
   charts?: {
-    type: 'monthly_growth' | 'regional_revenue' | 'product_profit';
+    type: 'monthly_growth' | 'regional_revenue' | 'product_profit' | 'bar_chart' | 'table';
     title: string;
     subtitle: string;
+    data?: any[];
   };
-  // Refusal specific
   refusalDetails?: {
     reason: string;
     availableFields: string[];
     missingFields: string[];
     whyStopped: string;
   };
-  // Conflict specific
   conflictDetails?: {
     conflictType: string;
     sourceA: { name: string; val: string };

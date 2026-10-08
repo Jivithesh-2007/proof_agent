@@ -1,9 +1,11 @@
 import logging
+import pandas as pd
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from backend.models.analysis_contract import AnalysisContract
 from backend.data.dataset_resolver import DatasetResolver, DatasetResolverError
 from backend.data.column_resolver import ColumnResolver, ColumnResolverError
+from backend.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -13,11 +15,20 @@ class ValidationResult(BaseModel):
     errors: List[str] = []
 
 class ContractValidator:
-    """Pre-code-generation gate that strictly validates contract completeness and structural correctness."""
+    """Pre-execution gate that strictly validates contract completeness, schema compatibility, and structural correctness."""
 
     VALID_RESULT_TYPES = {
         "scalar", "integer", "float", "percentage", "ranked_item",
         "grouped_table", "comparison", "string", "boolean", "refusal"
+    }
+
+    VALID_AGGREGATIONS = {
+        "sum", "mean", "median", "min", "max", "count", "nunique",
+        "std", "variance", "correlation", "missing_values", "duplicate_analysis"
+    }
+
+    NUMERIC_ONLY_AGGREGATIONS = {
+        "sum", "mean", "median", "std", "variance"
     }
 
     VALID_RETURN_DEFINITIONS = {
@@ -26,7 +37,7 @@ class ContractValidator:
     }
 
     VALID_UNITS = {
-        "INR", "USD", "EUR", "percent", "%", "count", "unitless", "orders", "items", "customers"
+        "INR", "USD", "EUR", "percent", "%", "count", "unitless", "orders", "items", "customers", "days"
     }
 
     @classmethod
@@ -47,9 +58,9 @@ class ContractValidator:
 
     @classmethod
     def validate_contract(cls, contract: AnalysisContract) -> ValidationResult:
-        errors = []
+        errors: List[str] = []
 
-        # 1. Check if document retrieval query
+        # 1. Document retrieval query
         if contract.query_type == "document_retrieval":
             if not contract.documents_required:
                 return ValidationResult(
@@ -67,10 +78,14 @@ class ContractValidator:
                 errors=["Empty datasets_required"]
             )
 
-        # 2. Check each dataset exists via DatasetResolver
+        # 3. Check each dataset exists via DatasetResolver
+        resolved_dfs: Dict[str, pd.DataFrame] = {}
         for ds_id in contract.datasets_required:
             try:
-                DatasetResolver.resolve_dataset(ds_id)
+                res_art = DatasetResolver.resolve_dataset(ds_id)
+                df = storage_service.get_dataframe(res_art.dataset_id)
+                if df is not None:
+                    resolved_dfs[res_art.dataset_id] = df
             except DatasetResolverError as e:
                 return ValidationResult(
                     is_valid=False,
@@ -78,7 +93,7 @@ class ContractValidator:
                     errors=[str(e)]
                 )
 
-        # 3. Check each required column exists via ColumnResolver
+        # 4. Check each required column exists via ColumnResolver
         for col_spec in contract.columns_required:
             if "." in col_spec:
                 ds_id, col_name = col_spec.split(".", 1)
@@ -105,7 +120,7 @@ class ContractValidator:
                 errors=errors
             )
 
-        # 4. Check joins reference real datasets & keys
+        # 5. Check joins reference real datasets & keys
         for join in contract.joins:
             try:
                 left_d = cls._find_dataset_for_col(join.left_dataset, join.left_column, contract.datasets_required)
@@ -115,23 +130,49 @@ class ContractValidator:
             except (DatasetResolverError, ColumnResolverError) as e:
                 errors.append(f"Invalid join specification: {e}")
 
-        # 5. Check filters reference real columns
+        # 6. Check filters reference real columns and are type compatible
         for flt in contract.filters:
             try:
                 target_d = cls._find_dataset_for_col(flt.dataset, flt.column, contract.datasets_required)
                 ColumnResolver.resolve_column(target_d, flt.column)
+                
+                # Check filter compatibility
+                df = resolved_dfs.get(target_d)
+                if df is not None and flt.column in df.columns:
+                    col_dtype = df[flt.column].dtype
+                    if flt.operator in [">", "<", ">=", "<="]:
+                        if not pd.api.types.is_numeric_dtype(col_dtype) and not pd.api.types.is_datetime64_any_dtype(col_dtype):
+                            # Try coercion test
+                            converted = pd.to_numeric(df[flt.column], errors='coerce')
+                            if converted.notna().sum() == 0:
+                                errors.append(f"Inequality filter operator '{flt.operator}' incompatible with non-numeric column '{flt.column}' ({col_dtype})")
             except (DatasetResolverError, ColumnResolverError) as e:
                 errors.append(f"Invalid filter column: {e}")
 
-        # 6. Check aggregations reference real columns
+        # 7. Check aggregations reference real columns and are type compatible
         for agg in contract.aggregations:
-            try:
-                target_d = cls._find_dataset_for_col(agg.dataset, agg.column, contract.datasets_required)
-                ColumnResolver.resolve_column(target_d, agg.column)
-            except (DatasetResolverError, ColumnResolverError) as e:
-                errors.append(f"Invalid aggregation column: {e}")
+            op_name = (agg.operation or "").lower()
+            if op_name and op_name not in cls.VALID_AGGREGATIONS:
+                errors.append(f"Unsupported aggregation operation: '{op_name}'")
 
-        # 7. Check group_by columns exist
+            if agg.column:
+                try:
+                    target_d = cls._find_dataset_for_col(agg.dataset, agg.column, contract.datasets_required)
+                    ColumnResolver.resolve_column(target_d, agg.column)
+
+                    # Check numeric type compatibility
+                    if op_name in cls.NUMERIC_ONLY_AGGREGATIONS:
+                        df = resolved_dfs.get(target_d)
+                        if df is not None and agg.column in df.columns:
+                            col_dtype = df[agg.column].dtype
+                            if not pd.api.types.is_numeric_dtype(col_dtype):
+                                converted = pd.to_numeric(df[agg.column], errors='coerce')
+                                if converted.notna().sum() == 0:
+                                    errors.append(f"Numeric aggregation '{op_name}' is incompatible with non-numeric column '{agg.column}' of type '{col_dtype}'")
+                except (DatasetResolverError, ColumnResolverError) as e:
+                    errors.append(f"Invalid aggregation column: {e}")
+
+        # 8. Check group_by columns exist
         for gb in contract.group_by:
             try:
                 target_d = cls._find_dataset_for_col(gb.dataset, gb.column, contract.datasets_required)
@@ -139,20 +180,23 @@ class ContractValidator:
             except (DatasetResolverError, ColumnResolverError) as e:
                 errors.append(f"Invalid group_by column: {e}")
 
-        # 8. Check result type and unit validity
+        # 9. Check sorting columns exist
+        for sort_spec in (contract.sorting or []):
+            if sort_spec.column:
+                try:
+                    target_d = cls._find_dataset_for_col(sort_spec.dataset, sort_spec.column, contract.datasets_required)
+                    ColumnResolver.resolve_column(target_d, sort_spec.column)
+                except (DatasetResolverError, ColumnResolverError) as e:
+                    errors.append(f"Invalid sort column: {e}")
+
+        # 10. Check result type and unit validity (NO INR GUESSING)
         if contract.expected_result_type not in cls.VALID_RESULT_TYPES:
             errors.append(f"Unsupported result_type '{contract.expected_result_type}'")
 
         if contract.expected_unit and contract.expected_unit not in cls.VALID_UNITS:
             errors.append(f"Unsupported or unverified unit '{contract.expected_unit}'")
 
-        # 9. Completeness requirements for ranked / return-rate / numerical queries
-        query_type = contract.query_type or "aggregation"
-        
-        if "ranked" in query_type or contract.expected_result_type == "ranked_item":
-            if not contract.group_by or not contract.aggregations:
-                errors.append("Ranked queries require group_by and aggregation")
-
+        # 11. Completeness requirements for return-rate queries
         if ("return rate" in contract.question.lower() or "return_rate" in (contract.expected_metric or "").lower()):
             if not contract.return_definition:
                 return ValidationResult(

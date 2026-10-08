@@ -11,12 +11,8 @@ from backend.documents.metadata import MetadataExtractor
 from backend.services.storage import storage_service
 from backend.rag.vector_store import global_vector_store
 from backend.rag.embeddings import EmbeddingService
-from backend.providers.factory import ProviderFactory
-
 router = APIRouter(tags=["Upload"])
-
-embedding_provider = ProviderFactory.get_embedding_provider()
-embedding_service = EmbeddingService(embedding_provider)
+embedding_service = EmbeddingService()
 
 def rebuild_vector_index():
     for doc in storage_service.list_documents():
