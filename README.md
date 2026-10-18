@@ -1,8 +1,12 @@
-# ProofAI — Self-Verifying Data Intelligence
+# ProofAI & CaseLens AI — Production-Style Verified Intelligence Platform
 
-> **Tagline**: *"An AI Data Analyst That Proves Its Answers."*  
-> **Hackathon Problem Statement**: `HNX26PSI08 — Agentic GenAI · Data Analytics · Code Generation · Proof Verification`  
-> **Execution Mode**: `100% Offline | Deterministic Rule Model | Zero External LLM/API Dependencies`
+> **CaseLens AI Tagline**: *"Every claim has evidence. Every answer has a source."*  
+> **ProofAI Tagline**: *"An AI Data Analyst That Proves Its Answers."*  
+> **Execution Mode**: `100% Offline | Deterministic Rule Model | Zero Hallucination | Zero Cloud Telemetry`
+
+> [!IMPORTANT]
+> **Looking for CaseLens AI (Legal Document Intelligence)?**  
+> Read the complete [CaseLens AI Architecture & Evaluation Guide](CASELENS_README.md) for full details on verbatim page citations, cross-document contradiction detection, contract checklists, and the 6 demonstration scenarios.
 
 ---
 

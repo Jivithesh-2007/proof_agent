@@ -10,6 +10,7 @@ from backend.api.routes import (
     documents_router,
     analysis_router,
 )
+from backend.caselens.routes import router as caselens_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,6 +54,9 @@ app.include_router(documents_router, prefix="/api")
 
 app.include_router(analysis_router)
 app.include_router(analysis_router, prefix="/api")
+
+app.include_router(caselens_router)
+app.include_router(caselens_router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn

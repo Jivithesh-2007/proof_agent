@@ -8,6 +8,7 @@ import {
   Activity,
   Settings,
   ShieldCheck,
+  Scale,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useTheme } from '../../context/ThemeContext';
@@ -68,6 +69,17 @@ export const Sidebar: React.FC = () => {
           );
         })}
       </nav>
+
+      {/* CaseLens Intelligence Switcher */}
+      <div className="p-3 border-t theme-border">
+        <NavLink
+          to="/caselens/overview"
+          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 text-xs font-semibold hover:bg-blue-600/20 transition-all"
+        >
+          <Scale className="w-4 h-4 shrink-0" />
+          <span>CaseLens Legal Intel →</span>
+        </NavLink>
+      </div>
     </aside>
   );
 };
